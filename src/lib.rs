@@ -276,12 +276,15 @@ impl<Host> Reloadable<Host> {
     ///
     /// [`live_reload!`]: macro.live_reload.html
     pub fn new<P: AsRef<Path>>(path: P, host: Host) -> Result<Self, Error> {
-        let sym = AppSym::new(&path)?;
+        let sym = AppSym::new(find_latest_path(&path))?;
+
         let size = (unsafe { &**sym.api }.size)();
         let (tx, rx) = channel();
         let mut watcher = notify::watcher(tx, Duration::from_secs(1))?;
+
         let mut new_path = PathBuf::new();
         new_path.push(path);
+
         watcher.watch(
             new_path.parent().unwrap(),
             notify::RecursiveMode::NonRecursive,
@@ -313,10 +316,8 @@ impl<Host> Reloadable<Host> {
         while let Ok(evt) = self.rx.try_recv() {
             use notify::DebouncedEvent::*;
             match evt {
-                NoticeWrite(ref path) |
-                Write(ref path) |
-                Create(ref path) => {
-                    if *path == self.path {
+                NoticeWrite(ref path) | Write(ref path) | Create(ref path) => {
+                    if *path == find_latest_path(&self.path) {
                         should_reload = true;
                     }
                 }
@@ -344,8 +345,11 @@ impl<Host> Reloadable<Host> {
         if let Some(AppSym { ref mut api, .. }) = self.sym {
             (unsafe { &***api }.unload)(&mut self.host, Self::get_state_ptr(&mut self.state));
         }
+
+        let path = find_latest_path(&self.path);
+
         self.sym = None;
-        let sym = AppSym::new(&self.path)?;
+        let sym = AppSym::new(path)?;
         // @Avoid reallocating if unnecessary
         self.realloc_buffer((unsafe { &**sym.api }.size)());
         (unsafe { &**sym.api }.reload)(&mut self.host, Self::get_state_ptr(&mut self.state));
@@ -530,5 +534,41 @@ macro_rules! live_reload {
             unload: unload_wrapper,
             deinit: deinit_wrapper,
         };
+    }
+}
+
+fn find_latest_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    let path = path.as_ref();
+
+    let paths = {
+        let file_stem = path.file_stem();
+        let ext = path.extension();
+
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter(|e| e.is_ok())
+            .map(|e| e.unwrap().path())
+            .filter(|path| {
+                let file_stem2 = path.file_stem();
+                let ext2 = path.extension();
+
+                match (file_stem, ext, file_stem2, ext2) {
+                    (Some(file_stem), Some(ext), Some(file_stem2), Some(ext2)) => {
+                        file_stem2
+                            .to_str()
+                            .unwrap()
+                            .starts_with(&format!("{}_", file_stem.to_str().unwrap()))
+                            && ext == ext2
+                    }
+                    _ => false,
+                }
+            })
+            .collect::<std::vec::Vec<PathBuf>>()
+    };
+
+    if paths.len() == 0 {
+        path.to_path_buf()
+    } else {
+        paths.iter().max_by_key(|p| p.file_stem()).unwrap().clone()
     }
 }
