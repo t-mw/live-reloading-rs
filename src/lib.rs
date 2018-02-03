@@ -313,15 +313,25 @@ impl<Host> Reloadable<Host> {
     /// [`reload_now`]: struct.Reloadable.html#method.reload_now
     pub fn reload(&mut self) -> Result<(), Error> {
         let mut should_reload = false;
+
+        let mut events = vec![];
         while let Ok(evt) = self.rx.try_recv() {
-            use notify::DebouncedEvent::*;
-            match evt {
-                NoticeWrite(ref path) | Write(ref path) | Create(ref path) => {
-                    if *path == find_latest_path(&self.path) {
-                        should_reload = true;
+            events.push(evt);
+        }
+
+        if events.len() > 0 {
+            let latest_path = find_latest_path(&self.path);
+
+            for evt in events.iter() {
+                use notify::DebouncedEvent::*;
+                match evt {
+                    &NoticeWrite(ref path) | &Write(ref path) | &Create(ref path) => {
+                        if *path == latest_path {
+                            should_reload = true;
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
